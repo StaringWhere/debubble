@@ -17,7 +17,7 @@ while(cap.isOpened()):
         # out.write(frame_filterd
         # cv2.imshow('frame_filterd',frame_filterd)
         # cv2.imshow('frame', frame)
-        cv2.imwrite('frames/frame_{}.jpg'.format(count),frame)
+        cv2.imwrite('frames/frame_{}.jpg'.format(count), frame, [int(cv2.IMWRITE_JPEG_QUALITY), 100])
         count += 1
         # r = 100
 

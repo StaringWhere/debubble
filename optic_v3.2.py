@@ -1,47 +1,21 @@
+
+# %%
 import cv2
 from time import time
 import numpy as np
 import matplotlib.pyplot as plt
 
-'''
-=====================光流法v3========================
-稀疏光流直接获取帧间位移和缩放 + 多stride稠密光流找出白点 + hsv过滤 + 前后帧补洞 + 中值滤波补洞 + 物体保护
 
-步骤：
-
-找到需要修复的点：
-1. 利用稀疏光流追踪背景的角点（数量远远多于v2）（特征是一直慢速）
-2. 假设当前处理第i帧图像，根据第i帧和第i+stride帧的角点计算单应性矩阵，并对齐位置
-3. 将两帧图像用稠密光流算出每个点的位移，距离超过背景位移的视为需要修复的点mask
-4. 将多个stride（如3和30）所生成的mask叠加
-5. 用饱和度和亮度配合找到明显且移动缓慢的白点
-
-修复：
-1. 利用前后10帧中无需修复的点，根据背景的位移填补当前帧
-2. 利用（宽松和严格的）饱和度、明度和大小从原图像中筛选出需要保护的物体（小鱼），从剩余mask中排除掉
-3. 剩余待修复的少量区域用大小为11的中值滤波补洞
-4. 复原小鱼
-
-优点：
-1. 优化获取帧间变换的方法
-2. 改善了帧平均补洞会残留白色拖影的问题，并提高了补洞效率
-缺点：
-1. 在位移和缩放对齐的过程中，边缘填充的误差会随着帧跨度增加而增加
-2. 通过稀疏光流追踪到的角点数量少，难以提取旋转、某一方向上的缩放等变换，能否用其他方式提取特征点
-====================================================
-'''
-
-
+# %%
 def findVertex(src):
-    '''
-    寻找背景角点
-    '''
+    start = time()
+
     # 读取视频
     cap = cv2.VideoCapture(src)
 
     # ShiTomasi 角点检测参数
     feature_params = dict(maxCorners=1000,
-                            qualityLevel=0.01,
+                            qualityLevel=0.1,
                             minDistance=20,
                             blockSize=7)
 
@@ -51,10 +25,10 @@ def findVertex(src):
                         criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.03))
 
     # 创建随机颜色
-    color = np.random.randint(0, 255, (1000, 3))
+    color = np.random.randint(0, 255, (3000, 3))
 
-    for i in range(0):
-        _, _ = cap.read()
+    # for i in range(0):
+    #     _, _ = cap.read()
 
     # 获取第一帧，找到角点
     ret, old_frame = cap.read()
@@ -66,11 +40,12 @@ def findVertex(src):
 
     # 获取图像中的角点，返回到p0中
     p0 = cv2.goodFeaturesToTrack(old_gray, mask=None, **feature_params)
+    # p0 = background_p[0].reshape(-1, 1, 2)
 
     # 创建一个蒙版用来画轨迹
     mask = np.zeros_like(old_frame)
 
-    indexs = []  # 选取的角点标号
+    flags = [np.ones(len(p0))]  # 选取的角点标号
     ps = [p0[:,0]] # 保存角点
 
     while(1):
@@ -92,7 +67,8 @@ def findVertex(src):
 
         # 选取好的跟踪点
         index = (st == 1) & (mag < 5)
-        indexs.append(index.flatten())
+        flag = np.zeros_like(flags[-1])
+        flag[np.where(flags[-1] == 1)[0][index.flatten()]] = 1
         good_new = p1[index]
         good_old = p0[index]
 
@@ -104,30 +80,72 @@ def findVertex(src):
             frame = cv2.circle(frame, (a, b), 5, color[i].tolist(), -1)
         img = cv2.add(frame, mask)
 
-        # 展示
-        cv2.imshow('frame', img)
-        # cv2.imshow('frame_gray', frame_gray)
-        k = cv2.waitKey(1) & 0xff
-        if k == 27:
-            break
+        # # 展示
+        # cv2.imshow('frame', img)
+        # # cv2.imshow('frame_gray', frame_gray)
+        # k = cv2.waitKey(1) & 0xff
+        # if k == 27:
+        #     break
 
         # 更新上一帧的图像和追踪点
         old_gray = frame_gray.copy()
+        p_add = cv2.goodFeaturesToTrack(old_gray, mask=None, **feature_params)
         p0 = good_new.reshape(-1, 1, 2)
-        ps.append(good_new)
+        p0, add_num = appendVertex(p0, p_add, feature_params['minDistance'] / 1.414)
+        flag = np.append(flag, np.ones(add_num))
+        flags.append(flag.astype('int'))
+        ps.append(p0[:, 0])
 
-    cv2.destroyAllWindows()
+    # cv2.destroyAllWindows()
     cap.release()
 
-    # 迭代出背景角点 
-    background_p = []
-    for i, p in enumerate(ps[: -1]):
-        for j in indexs[i:]:
-            p = p[j]
-        background_p.append(p)
-    background_p.append(ps[-1])
+    # -----------将留存时间不够长的的点去掉------------
 
-    return background_p
+    # 最小留存时间
+    min_duration = 200
+
+    # 统计每个点的留存时间
+    duration = np.zeros(flags[-1].shape)
+    for flag in flags:
+        duration[np.where(flag == 1)[0]] += 1
+
+    # 将有效角点对应起来，若当前帧没有该角点，补充为[-1, -1]
+    valid_index = np.where(duration > min_duration)[0]
+    bg_ps = []
+    junk_p = np.array([-1, -1], dtype = 'int')
+    for flag, p in zip(flags, ps):
+        bg_p = []
+        for index in valid_index:
+            try:
+                if flag[index] == 0:
+                    bg_p.append(junk_p)
+                else:
+                    bg_p.append(p[int(sum(flag[: index]))])
+            except:
+                bg_p.append(junk_p)
+
+        bg_ps.append(bg_p)
+
+    bg_ps = np.asarray(bg_ps)
+    print('vertex find complete in ', time() - start)
+    return bg_ps
+
+
+def appendVertex(p0, p_add, min_dis):
+    '''
+    根据4邻域距离加入新的角点
+    '''
+    p_ret = p0.copy()
+    for p in p_add:
+        vec = p0 - p
+        dis = abs(vec[:, 0, 0]) + abs(vec[:, 0, 1])
+        if all(dis > min_dis):
+            p_ret = np.vstack((p_ret, p.reshape(-1, 1, 2)))
+    
+    add_num = p_ret.shape[0] - p0.shape[0]
+
+    return p_ret, add_num
+
 
 def sharpen(img):
     kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]], np.float32) #定义一个核
@@ -135,9 +153,14 @@ def sharpen(img):
 
     return sharpened
 
-def alignImg(vertex, ref, img, ref_id, img_id, fill = 1):
+
+def alignImg(vertex, ref, img, id_ref, id_img, fill = 1):
+    flag = (np.sum(vertex[id_img - 1], axis = 1) >= 0) & (np.sum(vertex[id_ref - 1], axis = 1) >= 0)
+    p_img = vertex[id_img - 1][flag]
+    p_ref = vertex[id_ref - 1][flag]
+
     # 计算单应性矩阵
-    h, mask = cv2.findHomography(vertex[img_id - 1], vertex[ref_id - 1], cv2.RANSAC)
+    h, mask = cv2.findHomography(p_img, p_ref, cv2.RANSAC)
     # 变换
     height, width = img.shape[: 2]
     img_reg = cv2.warpPerspective(img, h, (width, height))
@@ -146,8 +169,14 @@ def alignImg(vertex, ref, img, ref_id, img_id, fill = 1):
         ref_mb = cv2.medianBlur(ref, 21)
         img_reg = np.where(img_reg == 0, ref_mb, img_reg)
 
-    return img_reg
+    
+    vec = np.mean(p_img - p_ref, axis = 0)
+    mag = np.sqrt(vec[0] ** 2 + vec[1] ** 2)
 
+    return img_reg, mag
+
+
+# %%
 # 多stride
 
 def makeMask(vertex, first_frame, last_frame, strides, do_plot = 1, mode = 'run'):
@@ -186,7 +215,7 @@ def makeMask(vertex, first_frame, last_frame, strides, do_plot = 1, mode = 'run'
             gray2 = cv2.cvtColor(frame2, cv2.COLOR_BGR2GRAY)
 
             #--------------------恢复背景位移-------------------
-            gray2_shift = alignImg(vertex, gray, gray2, i, i + stride)
+            gray2_shift, mag_bg = alignImg(vertex, gray, gray2, i, i + stride)
 
             #-----------------------稠密光流-------------------------
             # 返回一个两通道的光流向量，实际上是每个点的像素位移值
@@ -202,8 +231,6 @@ def makeMask(vertex, first_frame, last_frame, strides, do_plot = 1, mode = 'run'
 
             #----------------------MASK------------------------------
             # 用幅度判断
-            vec = np.mean(vertex[i + stride - 1] - vertex[i - 1], axis = 0)
-            mag_bg = np.sqrt(vec[0] ** 2 + vec[1] ** 2)
             mask = mag > mag_bg
             mask = np.where(mag < 2, 0, mask)
             mask = (mask * 255).astype('uint8')
@@ -245,6 +272,8 @@ def makeMask(vertex, first_frame, last_frame, strides, do_plot = 1, mode = 'run'
     if do_plot:
         cv2.destroyAllWindows()
 
+
+# %%
 def paint(vertex, first_frame, last_frame, stride, do_plot = 1, mode = 'run'):
     frames = []
     masks = []
@@ -390,15 +419,17 @@ def paint(vertex, first_frame, last_frame, stride, do_plot = 1, mode = 'run'):
         cv2.destroyAllWindows()
 
 
+# %%
 # 多stride
 strides = [3, 30]
 stride_max = max(strides)
-first_frame = 195
+first_frame = 1
 last_frame = 503
 
 # 获取背景移动信息
-vertex = findVertex('video.avi')
-print('finsh')
+# vertex = findVertex('video.avi')
 
-makeMask(vertex, first_frame, last_frame, strides, mode = 'debug')
-paint(vertex, first_frame, last_frame, stride_max, mode = 'run')
+makeMask(vertex, first_frame, last_frame, strides, mode = 'run')
+# paint(vertex, first_frame, last_frame, stride_max, mode = 'run')
+
+

@@ -1,17 +1,27 @@
 from __future__ import print_function
 import cv2
 import numpy as np
+from time import time
 
 
-MAX_FEATURES = 500
-GOOD_MATCH_PERCENT = 0.5
+MAX_FEATURES = 1000
+GOOD_MATCH_PERCENT = 0.3
 
 
 def alignImages(im1, im2):
 
     # Convert images to grayscale
     im1Gray = cv2.cvtColor(im1, cv2.COLOR_BGR2GRAY)
+    im1Gray = cv2.medianBlur(im1Gray, 11)
+    kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]], np.float32) #定义一个核
+    im1Gray = cv2.filter2D(im1Gray, -1, kernel=kernel)
+    im1Gray = cv2.equalizeHist(im1Gray)
+
     im2Gray = cv2.cvtColor(im2, cv2.COLOR_BGR2GRAY)
+    im2Gray = cv2.medianBlur(im2Gray, 11)
+    kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]], np.float32) #定义一个核
+    im2Gray = cv2.filter2D(im2Gray, -1, kernel=kernel)
+    im2Gray = cv2.equalizeHist(im2Gray)
 
     # Detect ORB features and compute descriptors.
     orb = cv2.ORB_create(MAX_FEATURES)
@@ -58,17 +68,14 @@ if __name__ == '__main__':
     # Read reference image
     refFilename = "frames/frame_450.jpg"
     print("Reading reference image : ", refFilename)
-    imReference = cv2.imread(refFilename, cv2.IMREAD_COLOR)[332: ,718:, :]
-    imReference = cv2.medianBlur(imReference, 11)
-    kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]], np.float32) #定义一个核
-    imReference = cv2.filter2D(imReference, -1, kernel=kernel)
+    # imReference = cv2.imread(refFilename)[332: ,718:, :]
+    imReference = cv2.imread(refFilename)[:, 0:718, :]
 
     # Read image to be aligned
     imFilename = "frames/frame_480.jpg"
     print("Reading image to align : ", imFilename)
-    im = cv2.imread(imFilename, cv2.IMREAD_COLOR)[332: ,718:, :]
-    im = cv2.medianBlur(im, 11)
-    im = cv2.filter2D(im, -1, kernel=kernel)
+    im = cv2.imread(imFilename)[:, 0:718, :]
+    # im = cv2.imread(imFilename)[332: ,718:, :]
 
     print("Aligning images ...")
     # Registered image will be resotred in imReg.
@@ -80,8 +87,9 @@ if __name__ == '__main__':
     print("Saving aligned image : ", outFilename)
     cv2.imwrite(outFilename, imReg)
 
+    cv2.imwrite('aligned/frame2.jpg', im)
     cv2.imwrite('aligned/orb_frame1.jpg', imReference)
-    cv2.imwrite('aligned/orb_frame31.jpg', imReg)
+    cv2.imwrite('aligned/orb_frame2.jpg', imReg)
 
     # Print estimated homography
     print("Estimated homography : \n",  h)

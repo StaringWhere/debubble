@@ -5,6 +5,12 @@ from time import time
 import numpy as np
 import matplotlib.pyplot as plt
 
+'''
+=====================光流法v3.2========================
+更新：
+1. 稀疏光流可以中途加点或去点，以角点的留存时间为依据判断是否为背景角点
+====================================================
+'''
 
 # %%
 def findVertex(src):

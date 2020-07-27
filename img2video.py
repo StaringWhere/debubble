@@ -9,7 +9,7 @@ out = cv2.VideoWriter('output.mp4',fourcc, 20.0, (1436,664 * 2))
 src = 'dense/inpaint_dense/'
 n = len(os.listdir(src))
 
-with_original_frame = 1
+with_original_frame = 0
 
 for i in range(n):
     inpaint = cv2.imread(src + 'inpaint_{}'.format(i + 1) + '.jpg')

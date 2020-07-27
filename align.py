@@ -66,7 +66,7 @@ def alignImages(im1, im2):
 if __name__ == '__main__':
 
     # Read reference image
-    refFilename = "frames/frame_450.jpg"
+    refFilename = "frames/frame_4.jpg"
     print("Reading reference image : ", refFilename)
     # imReference = cv2.imread(refFilename)[332: ,718:, :]
     imReference = cv2.imread(refFilename)[:, 0:718, :]

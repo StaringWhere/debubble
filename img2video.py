@@ -1,35 +1,65 @@
 import cv2
 import numpy as np
 import os
+import re
 
+#-------------------PARAMETERS--------------------
+# 是否拼接
+mode = 0
+# 输出文件名（无后缀名）
+filename = 'output'
+# 文件夹1
+dir1 = 'masks/masks_optic_v3.3'
+# 文件夹2
+dir2 = 'inpaints/inpaint_optic_v2.2'
+
+#-------------------------------------------------
 # 定义一个VideoWriter对象
 fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-out = cv2.VideoWriter('output.mp4',fourcc, 20.0, (1436,664 * 2))
+out = cv2.VideoWriter(filename + '.mp4',fourcc, 20.0, (1436,664 * 2))
 
-src = 'dense/inpaint_dense/'
-n = len(os.listdir(src))
+# 文件序号正则表达式
+proc = re.compile('_\d+\.')
+rule = lambda str: int(proc.search(str)[0][1: -1])
 
-with_original_frame = 0
+# 文件夹1
+src1 = os.listdir(dir1)
+src1.sort(key = rule)
 
-for i in range(n):
-    inpaint = cv2.imread(src + 'inpaint_{}'.format(i + 1) + '.jpg')
-    if with_original_frame:
-        frame = cv2.imread('frames/frame_{}'.format(i + 1) + '.jpg')
-    if inpaint is not None:
-        if with_original_frame:
-            img = np.vstack((frame, inpaint))
-            img = img.astype('uint8')
-            out.write(img)
-            img_resize = cv2.resize(img, (0, 0), fx = 0.5, fy = 0.5)
-            cv2.imshow('img', img_resize)
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
-        else:
-            out.write(inpaint)
-            cv2.imshow('inpaint', inpaint)
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
+if mode:
+    # -----------上下拼接--------------
 
-print(i)
+    # 文件夹2
+    src2 = os.listdir(dir2)
+    src2.sort(key = rule)
+
+    # 长度
+    n = len(src1) if len(src1) <= len(src2) else len(src2)
+
+    # 截取一样长的
+    src1 = src1[: n]
+    src2 = src2[: n]
+
+    for s1, s2 in zip(src1, src2):
+        img1 = cv2.imread(os.path.join(dir1, s1))
+        img2 = cv2.imread(os.path.join(dir2, s2))
+
+        img = np.vstack((img1, img2))
+        img = img.astype('uint8')
+        out.write(img)
+        img_resize = cv2.resize(img, (0, 0), fx = 0.5, fy = 0.5)
+        cv2.imshow('img', img_resize)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+else:
+    n = len(src1)
+    for s1 in src1:
+        img = cv2.imread(os.path.join(dir1, s1))
+        out.write(img)
+        cv2.imshow('img', img)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+print('Total of', n, 'frames')
 out.release()
 cv2.destroyAllWindows()

@@ -5,18 +5,19 @@ import re
 
 #-------------------PARAMETERS--------------------
 # 是否拼接
-mode = 0
+mode = 1
 # 输出文件名（无后缀名）
 filename = 'output'
 # 文件夹1
-dir1 = 'masks/masks_optic_v3.3'
+dir1 = 'dense/inpaint_dense'
 # 文件夹2
-dir2 = 'inpaints/inpaint_optic_v2.2'
+# dir2 = 'inpaints/inpaint_optic_v2.2'
+dir2 = 'frames'
 
 #-------------------------------------------------
 # 定义一个VideoWriter对象
 fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-out = cv2.VideoWriter(filename + '.mp4',fourcc, 20.0, (1436,664 * 2))
+out = cv2.VideoWriter(filename + '.mp4',fourcc, 20.0, (1436,664 * (mode + 1)))
 
 # 文件序号正则表达式
 proc = re.compile('_\d+\.')

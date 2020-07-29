@@ -8,11 +8,44 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 '''
-=====================光流法v3.2========================
-更新：
-1. 特征点用orb获取，增强抗干扰
-2. 对齐时，由外沿向内取一定数量的特征点，对齐更准确
-3. 优化前后帧补洞顺序
+=====================光流法v3.3========================
+optic v3.3
+
+相较optic v2.2更新：
+1. 特征点用orb获取，利用中值滤波、锐化和直方图平均增强抗干扰能力
+2. 每一帧都抓取新的特征点，筛选地加入到有效特征点序列中（降低了一些性能）
+3. 对齐时，由外沿向内取一定数量的特征点，对齐更准确
+4. 由于对齐更准确，制作mask时对对齐距离大的帧下调了阈值
+5. 优化前后帧补洞顺序
+
+优点：
+1. 特征点更多，允许中途新增的特征点，单应性矩阵对齐，都使画面边缘的物体对齐效果提升明显，减少了背景误判断，边缘物体不再抖动和模糊
+2. 白点判断阈值下降，轻微提升了白点检测的能力
+缺点：
+1. 仍然有剩余的移动缓慢的白点
+
+步骤：
+
+获取背景角点：
+1. 对第一帧图像预处理（中值滤波、直方图平均、锐化），并用orb获取特征点
+2. 利用稀疏光流追踪上一帧的特征点、根据速度判断有效的点，并记录下来
+3. 用orb获取当前帧的特征点，与有效的点一起作为下一帧的稀疏光流的输入
+4. 重复2，3步骤
+5. 将超速的店、持续时间不够长的点去除
+6. 对齐每一帧中对应的特征点，获得背景角点矩阵（每帧可用特征点数量为50-200）
+
+找到需要修复的点：
+1. 假设当前处理第i帧图像，找到第i帧和第i+stride帧共有的特征点，用凸包函数取共有特征点外沿的30个点，
+2. 计算单应性矩阵，对齐图像
+3. 将两帧图像用稠密光流算出每个点的位移，距离超过（0.6 * 背景位移 + 1.8）的视为需要修复的点
+4. 将多个stride（如3和30）所生成的mask叠加
+5. 用饱和度和亮度配合找到明显且移动缓慢的白点
+
+修复：
+1. 利用前后10帧中无需修复的点，对齐填补当前帧
+2. 利用（宽松和严格的）饱和度、明度和大小从原图像中筛选出需要保护的物体（小鱼），从剩余mask中排除掉
+3. 剩余待修复的少量区域用大小为11的中值滤波补洞
+4. 复原小鱼
 ====================================================
 '''
 
@@ -163,6 +196,7 @@ def findVertex(src):
     print('vertex find complete in ', time() - start)
     return bg_ps
 
+
 def orbFeature(img):
     orb = cv2.ORB_create(nfeatures = 100, scaleFactor = 2, firstLevel = 0)
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -173,6 +207,7 @@ def orbFeature(img):
     p = np.array([keypoint.pt for keypoint in keypoints]).reshape(-1, 1, 2)
 
     return p.astype('float32')
+
 
 def appendVertex(p0, p_add, min_dis):
     '''
@@ -208,7 +243,7 @@ def alignImg(vertex, ref, img, id_ref, id_img, fill = 1, p_th = 30):
     p_ref = vertex[id_ref - 1][flag]
 
     # 计算平均移动距离
-    vec = np.mean(p_img - p_ref, axis = 0)
+    vec = np.mean(np.abs(p_img - p_ref), axis = 0)
     mag = np.sqrt(vec[0] ** 2 + vec[1] ** 2)
 
     # 从外沿向内取一定数量的点
@@ -304,7 +339,7 @@ def makeMask(vertex, first_frame, last_frame, strides, do_plot = 1, mode = 'run'
             #----------------------MASK------------------------------
             # 用幅度判断
             # mask = mag > 5 + stride * 0.05
-            mask = mag > mag_bg
+            mask = mag > 0.6 * mag_bg + 1.8
             mask = np.where(mag < 2, 0, mask)
             mask = (mask * 255).astype('uint8')
 
@@ -319,12 +354,14 @@ def makeMask(vertex, first_frame, last_frame, strides, do_plot = 1, mode = 'run'
         ret, mask1 = cv2.threshold(frame_hsv[..., 2], 100, 255, cv2.THRESH_BINARY)
         ret, mask2 = cv2.threshold(frame_hsv[..., 1], 80, 255, cv2.THRESH_BINARY_INV)
         mask_hsv = cv2.bitwise_and(mask1, mask2)
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        mask_hsv = cv2.dilate(mask_hsv, kernel, iterations = 1)
 
         mask = cv2.bitwise_or(mask_hsv, mask)
 
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-        mask = cv2.dilate(mask, kernel, iterations=1)
-        mask = cv2.erode(mask, kernel, iterations=1)
+        mask = cv2.dilate(mask, kernel, iterations = 1)
+        mask = cv2.erode(mask, kernel, iterations = 1)
 
 
 
@@ -389,6 +426,9 @@ def paint(vertex, first_frame, last_frame, stride, do_plot = 1, mode = 'run'):
 
             # cv2.imshow('inpaint', inpaint)
             # cv2.imshow('mask', mask)
+            # if cv2.waitKey(0) == ord('q'):
+            #     cv2.destroyAllWindows()
+            #     return
 
             if j == 0 or masks[frame_index + j] is None:
                 continue
@@ -397,11 +437,9 @@ def paint(vertex, first_frame, last_frame, stride, do_plot = 1, mode = 'run'):
             frame2_shift, _ = alignImg(vertex, frames[frame_index], frames[frame_index + j], i, i + j, fill = 0)
             mask2_shift, _ = alignImg(vertex, masks[frame_index], masks[frame_index + j], i, i + j, fill = 0)
             
-            frame2s_shift.append(frame2_shift)
+            # print(i + j)
+            # frame2s_shift.append(frame2_shift)
             # cv2.imshow('frame2_shift', frame2_shift)
-            # if cv2.waitKey(0) == ord('q'):
-            #     cv2.destroyAllWindows()
-            #     return
 
             replace_mask = cv2.subtract(mask, mask2_shift)
             inpaint = np.where(replace_mask > 128, frame2_shift, inpaint)
@@ -502,7 +540,7 @@ def paint(vertex, first_frame, last_frame, stride, do_plot = 1, mode = 'run'):
 
 # %%
 # 多stride
-strides = [3, 20]
+strides = [3, 20, 10]
 stride_max = max(strides)
 first_frame = 1
 last_frame = 503

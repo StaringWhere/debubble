@@ -4,9 +4,9 @@
 /frames
 /inpaints
 /masks
-/output.avi
+*.avi
 /videos
 /__pycache__
 /是否考虑背景移动
 /普通帧差法不同步长
-output.mp4
+*.mp4

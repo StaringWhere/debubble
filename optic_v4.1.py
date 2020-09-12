@@ -1,5 +1,3 @@
-# To add a new cell, type '# %%'
-# To add a new markdown cell, type '# %% [markdown]'
 
 # %%
 import cv2
@@ -8,49 +6,17 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 '''
-=====================光流法v3.3========================
-optic v3.3
+=====================光流法v4.1========================
+optic v4.1
 
-相较optic v2.2更新：
-1. 特征点用orb获取，利用中值滤波、锐化和直方图平均增强抗干扰能力
-2. 每一帧都抓取新的特征点，筛选地加入到有效特征点序列中（降低了一些性能）
-3. 对齐时，由外沿向内取一定数量的特征点，对齐更准确
-4. 由于对齐更准确，制作mask时对对齐距离大的帧下调了阈值
-5. 优化前后帧补洞顺序
+相较optic v3.3更新：
+1. 减少不必要的IO
 
-优点：
-1. 特征点更多，允许中途新增的特征点，单应性矩阵对齐，都使画面边缘的物体对齐效果提升明显，减少了背景误判断，边缘物体不再抖动和模糊
-2. 白点判断阈值下降，轻微提升了白点检测的能力
-缺点：
-1. 仍然有剩余的移动缓慢的白点
-
-步骤：
-
-获取背景角点：
-1. 对第一帧图像预处理（中值滤波、直方图平均、锐化），并用orb获取特征点
-2. 利用稀疏光流追踪上一帧的特征点、根据速度判断有效的点，并记录下来
-3. 用orb获取当前帧的特征点，与有效的点一起作为下一帧的稀疏光流的输入
-4. 重复2，3步骤
-5. 将超速的店、持续时间不够长的点去除
-6. 对齐每一帧中对应的特征点，获得背景角点矩阵（每帧可用特征点数量为50-200）
-
-找到需要修复的点：
-1. 假设当前处理第i帧图像，找到第i帧和第i+stride帧共有的特征点，用凸包函数取共有特征点外沿的30个点，
-2. 计算单应性矩阵，对齐图像
-3. 将两帧图像用稠密光流算出每个点的位移，距离超过（0.6 * 背景位移 + 1.8）的视为需要修复的点
-4. 将多个stride（如3和30）所生成的mask叠加
-5. 用饱和度和亮度配合找到明显且移动缓慢的白点
-
-修复：
-1. 利用前后10帧中无需修复的点，对齐填补当前帧
-2. 利用（宽松和严格的）饱和度、明度和大小从原图像中筛选出需要保护的物体（小鱼），从剩余mask中排除掉
-3. 剩余待修复的少量区域用大小为11的中值滤波补洞
-4. 复原小鱼
 ====================================================
 '''
 
 # %%
-def findVertex(src):
+def findVertex(frames, do_show = 0):
     '''
     利用orb找特征点，利用稀疏光流跟踪找出背景角点，背景角点的特
     征的是移动缓慢，当角点速度小于阈值的时
@@ -59,21 +25,14 @@ def findVertex(src):
 
     :param src  : 视频地址
     :type src   : String
+    :param do_show  : 是否将过程展示出来，默认为不展示
     :returns    : 留存时间大于200的角点，
                   格式为(frame_num, p_num, 2)
                   若当前帧没有该角点，
                   则补充[-1, -1]
     '''
+
     start = time()
-
-    # 读取视频
-    cap = cv2.VideoCapture(src)
-
-    # ShiTomasi 角点检测参数
-    feature_params = dict(maxCorners=1000,
-                            qualityLevel=0.3,
-                            minDistance=20,
-                            blockSize=7)
 
     # lucas kanade光流法参数
     lk_params = dict(winSize=(15, 15),
@@ -83,37 +42,30 @@ def findVertex(src):
     # 创建随机颜色
     color = np.random.randint(0, 255, (3000, 3))
 
-    # for i in range(0):
-    #     _, _ = cap.read()
-
-    # 获取第一帧，找到角点
-    ret, old_frame = cap.read()
-
     # 找到原始灰度图
-    old_gray = cv2.cvtColor(old_frame, cv2.COLOR_BGR2GRAY)
+    old_gray = cv2.cvtColor(frames[0], cv2.COLOR_BGR2GRAY)
     old_gray = sharpen(old_gray)
     old_gray = cv2.equalizeHist(old_gray)
 
-    # # 获取图像中的角点，返回到p0中
-    # p0 = cv2.goodFeaturesToTrack(old_gray, mask=None, **feature_params)
-
-    p0 = orbFeature(old_frame)
+    p0 = orbFeature(frames[0])
 
     # 创建一个蒙版用来画轨迹
-    mask = np.zeros_like(old_frame)
+    mask = np.zeros_like(frames[0])
 
     flags = [np.ones(len(p0))]  # 选取的角点标号
     ps = [p0[:,0]] # 保存角点
     out_indexs = np.array([]) # 中途超速的点索引
 
-    while(1):
-        ret, frame = cap.read()
-        if type(frame) is type(None):
+    for frame in frames[1: ]:
+        
+        if frame is None:
             break
         # frame = frame[332: ,718:, :]
+
         frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         frame_gray = sharpen(frame_gray)
         frame_gray = cv2.equalizeHist(frame_gray)
+
 
         # 计算光流
         p1, st, err = cv2.calcOpticalFlowPyrLK(
@@ -135,33 +87,35 @@ def findVertex(src):
         out_index = np.where(flags[-1] == 1)[0][((st == 1) & (mag >= 5)).flatten()]
         out_indexs = np.append(out_indexs, out_index)
 
-        # 画出轨迹
-        for i, (new, old) in enumerate(zip(good_new, good_old)):
-            a, b = new.ravel()
-            c, d = old.ravel()
-            mask = cv2.line(mask, (a, b), (c, d), color[i].tolist(), 2)
-            frame = cv2.circle(frame, (a, b), 5, color[i].tolist(), -1)
-        img = cv2.add(frame, mask)
-
         # 展示
-        cv2.imshow('frame', img)
-        # cv2.imshow('frame_gray', frame_gray)
-        k = cv2.waitKey(1) & 0xff
-        if k == 27:
-            break
+        if do_show:
+            
+            # 画出轨迹
+            frame_circle = frame.copy()
+            for i, (new, old) in enumerate(zip(good_new, good_old)):
+                a, b = new.ravel()
+                c, d = old.ravel()
+                mask = cv2.line(mask, (a, b), (c, d), color[i].tolist(), 2)
+                frame_circle = cv2.circle(frame_circle, (a, b), 5, color[i].tolist(), -1)
+            img = cv2.add(frame_circle, mask)
 
+            cv2.imshow('frame', img)
+            # cv2.imshow('frame_gray', frame_gray)
+            k = cv2.waitKey(1) & 0xff
+            if k == 27:
+                break
+        
         # 更新上一帧的图像和追踪点
         old_gray = frame_gray.copy()
-        # p_add = cv2.goodFeaturesToTrack(old_gray, mask=None, **feature_params)
         p_add = orbFeature(frame)
         p0 = good_new.reshape(-1, 1, 2)
-        p0, add_num = appendVertex(p0, p_add, feature_params['minDistance'] / 1.414)
+        p0, add_num = appendVertex(p0, p_add, 20 / 1.414)
         flag = np.append(flag, np.ones(add_num))
         flags.append(flag.astype('int'))
         ps.append(p0[:, 0])
 
-    cv2.destroyAllWindows()
-    cap.release()
+    if do_show:
+        cv2.destroyAllWindows()
 
     # -----------将留存时间不够长的的点去掉------------
 
@@ -196,14 +150,19 @@ def findVertex(src):
     print('vertex find complete in ', time() - start)
     return bg_ps
 
-
+#%%
 def orbFeature(img):
-    orb = cv2.ORB_create(nfeatures = 100, scaleFactor = 2, firstLevel = 0)
+
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+    # 0.03s
     gray = cv2.medianBlur(gray, 21)
-    gray = sharpen(gray)
     gray = cv2.equalizeHist(gray)
+
+    # 0.015s
+    orb = cv2.ORB_create(nfeatures = 100, scaleFactor = 2, firstLevel = 0)
     keypoints, _ = orb.detectAndCompute(gray, None)
+
     p = np.array([keypoint.pt for keypoint in keypoints]).reshape(-1, 1, 2)
 
     return p.astype('float32')
@@ -282,9 +241,23 @@ def alignImg(vertex, ref, img, id_ref, id_img, fill = 1, p_th = 30):
 
     return img_reg, mag
 
+
+def makeVideo(imgs, filename):
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter(filename + '.mp4',fourcc, 20.0, (1436,664))
+
+    for img in imgs:
+        out.write(img)
+        cv2.imshow('img', img)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+    out.release()
+    cv2.destroyAllWindows()
+
 # %%
-def makeMask(vertex, first_frame, last_frame, strides, do_plot = 1, mode = 'run'):
-    height, width, channel = cv2.imread('frames/frame_1.jpg').shape
+def makeMask(frames, vertex, first_frame, last_frame, strides, do_plot = 1, mode = 'run'):
+    height, width, channel = frames[0].shape
 
     # 移动信息图
     hsv = np.zeros((height, width, channel)).astype('uint8')
@@ -303,17 +276,19 @@ def makeMask(vertex, first_frame, last_frame, strides, do_plot = 1, mode = 'run'
 
     stride_max = max(strides)
 
+    all_masks = []
+
     for i in np.arange(first_frame, last_frame - stride_max + 1, 1):
 
         start = time()
 
         # --------------------读取图片----------------------
-        frame = cv2.imread('frames/frame_{}.jpg'.format(i))
+        frame = frames[i - 1]
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
         masks = []
         for stride in strides:
-            frame2 = cv2.imread('frames/frame_{}.jpg'.format(i + stride))
+            frame2 = frames[i + stride - 1]
             if frame2 is None:
                 break
             gray2 = cv2.cvtColor(frame2, cv2.COLOR_BGR2GRAY)
@@ -378,18 +353,21 @@ def makeMask(vertex, first_frame, last_frame, strides, do_plot = 1, mode = 'run'
                 break
 
         #----------------------保存------------------------------
-        cv2.imwrite('dense/masks_dense/mask_{}.jpg'.format(i), mask)
+        # cv2.imwrite('dense/masks_dense/mask_{}.jpg'.format(i), mask)
         # cv2.imwrite('dense/rgb_dense/rgb_{}.jpg'.format(i), rgb)
-        # cv2.imwrite('dense/inpaint_dense/inpaint_{}.jpg'.format(i), img_inpaint)
 
+        all_masks.append(mask)
         print(i, time() - start)
 
     if do_plot:
         cv2.destroyAllWindows()
 
+    return all_masks
+
 
 # %%
-def paint(vertex, first_frame, last_frame, stride, do_plot = 1, mode = 'run'):
+def paint(all_masks, all_frames, vertex, first_frame, last_frame, stride, do_plot = 1, mode = 'run'):
+    all_inpaints = []
     frames = []
     masks = []
     source = np.arange(-10, 11, 1) # 从其他图片补第0张图片，必须为间距是1的等差数列
@@ -400,17 +378,19 @@ def paint(vertex, first_frame, last_frame, stride, do_plot = 1, mode = 'run'):
         #---------------------读取---------------------
         if i == first_frame:
             for j in source[:-1]:
-                frame = cv2.imread('frames/frame_{}.jpg'.format(i + j))
-                frames.append(frame)
-                mask = cv2.imread('dense/masks_dense/mask_{}.jpg'.format(i + j))
-                ret, mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
-                masks.append(mask)
+                try:
+                    frames.append(all_frames[i + j - 1])
+                    masks.append(all_masks[i + j -1])
+                except IndexError:
+                    frames.append(None)
+                    masks.append(None)
         
-        frame = cv2.imread('frames/frame_{}.jpg'.format(i + source[-1]))
-        frames.append(frame)
-        mask = cv2.imread('dense/masks_dense/mask_{}.jpg'.format(i + source[-1]))
-        ret, mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
-        masks.append(mask)
+        try:
+            frames.append(all_frames[i + source[-1] - 1])
+            masks.append(all_masks[i + source[-1] - 1])
+        except IndexError:
+            frames.append(None)
+            masks.append(None)
 
         #-----------------------用前后帧补洞----------------------
         # 修补的图像
@@ -439,7 +419,7 @@ def paint(vertex, first_frame, last_frame, stride, do_plot = 1, mode = 'run'):
             # cv2.imshow('frame2_shift', frame2_shift)
 
             replace_mask = cv2.subtract(mask, mask2_shift)
-            inpaint = np.where(replace_mask > 128, frame2_shift, inpaint)
+            inpaint = np.where(np.dstack((replace_mask, replace_mask, replace_mask)) > 128, frame2_shift, inpaint)
             mask = cv2.subtract(mask, replace_mask)
 
         #----------------------保护大的白色物体--------------------------
@@ -476,16 +456,15 @@ def paint(vertex, first_frame, last_frame, stride, do_plot = 1, mode = 'run'):
         demask = cv2.dilate(demask, kernel, iterations=1)
 
         demask = cv2.bitwise_not(demask)
-        demask_3d = np.stack((demask, demask, demask), axis = 2)
         
-        mask = cv2.bitwise_and(mask, demask_3d)
+        mask = cv2.bitwise_and(mask, demask)
 
         #---------------------用周围像素补洞-----------------------
         # inpaint = cv2.inpaint(inpaint, mask[..., 0], 5, cv2.INPAINT_TELEA)
 
         #----------------------中值滤波补洞-------------------------
         medianBlur = cv2.medianBlur(inpaint, 11)
-        inpaint = np.where(mask > 128, medianBlur, inpaint)
+        inpaint = np.where(np.dstack((mask, mask, mask)) > 128, medianBlur, inpaint)
 
         #----------------------帧平均补洞---------------------------
         # frame2s_shift = np.asarray(frame2s_shift)
@@ -511,10 +490,10 @@ def paint(vertex, first_frame, last_frame, stride, do_plot = 1, mode = 'run'):
         # inpaint = np.where(mask > 128, frame_avg, inpaint)
 
         #-----------------------恢复物体--------------------------
-        inpaint = np.where(demask_3d == 0, frame, inpaint)
+        inpaint = np.where(np.dstack((demask, demask, demask)) == 0, frame, inpaint)
         
         #------------------------保存-----------------------------
-        cv2.imwrite('dense/inpaint_dense/inpaint_{}.jpg'.format(i), inpaint)
+        # cv2.imwrite('dense/inpaint_dense/inpaint_{}.jpg'.format(i), inpaint)
 
         #------------------------展示-----------------------------
         if do_plot:
@@ -529,13 +508,40 @@ def paint(vertex, first_frame, last_frame, stride, do_plot = 1, mode = 'run'):
         frames.pop(0)
         masks.pop(0)
         
+        all_inpaints.append(inpaint)
+
         print(i, time() - start)
 
     if do_plot:
         cv2.destroyAllWindows()
+    
+    return(all_inpaints)
 
+#%%
+class videoReader():
+    def __init__(self, src):
+        self.cap = cv2.VideoCapture(src)
+
+    def release(self):
+        self.cap.release()
+
+    def readFrames(self, num):
+        frames = []
+        for i in range(num):
+            ret, frame = self.cap.read()
+            if frame is None:
+                print('It is the last frame')
+                break
+            frames.append(frame)
+        
+        return frames
 
 # %%
+
+cap = videoReader('video.avi')
+frames = cap.readFrames(1000)
+cap.release()
+
 # 多stride
 strides = [3, 20]
 stride_max = max(strides)
@@ -543,11 +549,12 @@ first_frame = 1
 last_frame = 503
 
 # 获取背景移动信息
-# vertex = findVertex('video.avi')
+vertex = findVertex(frames, do_show = 0)
 
-vertex = np.load('vertex.npy') 
+# vertex = np.load('vertex.npy')
 
-makeMask(vertex, first_frame, last_frame, strides, mode = 'run')
-paint(vertex, first_frame, last_frame, stride_max, mode = 'run')
+all_masks = makeMask(frames, vertex, first_frame, last_frame, strides, mode = 'run', do_plot = 0)
+all_inpaints = paint(all_masks, frames, vertex, first_frame, last_frame, stride_max, mode = 'run', do_plot = 0)
+makeVideo(all_inpaints, 'video')
 
-
+# %%
